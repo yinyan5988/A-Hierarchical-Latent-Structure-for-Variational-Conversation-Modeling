@@ -218,3 +218,75 @@ class ContextRNN(BaseRNNEncoder):
 
         outputs, hidden = self.rnn(encoder_hidden, hidden)
         return outputs, hidden
+
+    
+    
+    
+"""
+edit from here
+"""
+class BaseContext2Context(nn.Module):
+    def __init__(self):
+        super(BaseContext2Context,self).__init__()
+    
+    @property
+    def use_lstm(self):
+        return isinstance(self.rnncell, StackedLSTMCell)
+    
+    def init_h(self,batch_size=None,hidden=None):
+        """Return RNN initial state"""
+        if hidden is not None:
+            return hidden
+        
+        if self.use_lstm:
+            return (to_var(torch.zeros(batch_size,
+                                      self.hidden_size)),
+                    to_var(torch.zeros(batch_size,
+                                      self.hidden_size)))
+        else:
+            return to_var(torch.zeros(batch_size,
+                                      self.hidden_size))
+
+
+    def batch_size(self,input=None,h=None):
+
+        if inputs is not None:
+            batch_size = input.size(0)
+            return batch_size
+        else:
+            if self.use_lstm:
+                batch_size = h[0].size(1)
+            else:
+                batch_size = h.size(1)
+            return batch_size
+    
+    def forward(self):
+        raise NotImplementedError
+        
+class Context2Context(BaseContext2Context):
+    def __init__(self,input_size,hidden_size,rnn = nn.GRUCell,bias=True):
+        """Context-Level Encoder"""
+        super(Context2Context,self).__init__()
+        
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        
+            
+        self.rnn = rnn(input_size = input_size,
+                      hidden_size = hidden_size,
+                      bias = bias)
+    def forward(self,context_cell_input, hidden=None):
+        """
+        Args:
+        context_cell_input (Variable,FloatTensor): [batch_size,num_layers*direction*hidden_size]
+        return:
+        outputs: (variable):[batch_size,hidden_size]
+        """
+
+        batch_size =  context_cell_input.size(0)
+        hidden = self.init_h(batch_size,hidden=hidden)        
+        #self.rnn.flatten_parameters() ##do I need to faltten? 
+        context_output = self.rnn(context_cell_input,hidden)
+        return context_output
+     
