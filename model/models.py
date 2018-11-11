@@ -4,6 +4,7 @@ from utils import to_var, pad, normal_kl_div, normal_logpdf, bag_of_words_loss, 
 import layers
 import numpy as np
 import random
+import pdb
 
 VariationalModels = ['VHRED', 'VHCR']
 
@@ -199,6 +200,7 @@ class VHRED(nn.Module):
                                          config.sample,
                                          config.temperature,
                                          config.beam_size)
+
 
         self.context2decoder = layers.FeedForward(config.context_size + config.z_sent_size,
                                                   config.num_layers * config.decoder_hidden_size,
@@ -406,6 +408,7 @@ class VHRED(nn.Module):
         return samples
 
 
+
 class VHCR(nn.Module):
     def __init__(self, config):
         super(VHCR, self).__init__()
@@ -421,29 +424,44 @@ class VHCR(nn.Module):
 
         context_input_size = (config.num_layers
                               * config.encoder_hidden_size
-                              * self.encoder.num_directions + config.z_conv_size)
+                              * self.encoder.num_directions + config.z_conv_size+config.z_ctx_size) ## add z_ctx
         self.context_encoder = layers.ContextRNN(context_input_size,
                                                  config.context_size,
                                                  config.rnn,
                                                  config.num_layers,
                                                  config.dropout)
 
-        self.unk_sent = nn.Parameter(torch.randn(context_input_size - config.z_conv_size))
+        self.unk_sent = nn.Parameter(torch.randn(context_input_size - config.z_conv_size-config.z_ctx_size)) ##omit dimension config.z_ctx_size
 
         self.z_conv2context = layers.FeedForward(config.z_conv_size,
                                                  config.num_layers * config.context_size,
                                                  num_layers=1,
                                                  activation=config.activation)
+        
+        """edit here"""
+        self.context2context_first = layers.Context2Context(config.context_size*2+config.z_conv_size,
+                                                            config.context_size)
+        self.context2context = layers.Context2Context(config.context_size*2
+                                                      +config.z_conv_size+config.z_ctx_size,
+                                                            config.context_size)
+        """stop here"""
 
         context_input_size = (config.num_layers
                               * config.encoder_hidden_size
-                              * self.encoder.num_directions)
-        self.context_inference = layers.ContextRNN(context_input_size,
+                              * self.encoder.num_directions)  ##infer z_conv
+        self.context_inference = layers.ContextRNN(context_input_size,   
                                                    config.context_size,
                                                    config.rnn,
                                                    config.num_layers,
                                                    config.dropout,
                                                    bidirectional=True)
+        #Change bidirectional to false to make hidden_size same when inferring in ctx_z
+        self.ctx_inference = layers.ContextRNN(context_input_size,   
+                                                   config.context_size,
+                                                   config.rnn,
+                                                   config.num_layers,
+                                                   config.dropout)        
+ 
 
         self.decoder = layers.DecoderRNN(config.vocab_size,
                                         config.embedding_size,
@@ -457,7 +475,7 @@ class VHCR(nn.Module):
                                         config.temperature,
                                         config.beam_size)
 
-        self.context2decoder = layers.FeedForward(config.context_size + config.z_sent_size + config.z_conv_size,
+        self.context2decoder = layers.FeedForward(config.context_size + config.z_sent_size + config.z_conv_size+config.z_ctx_size,  ##add config.z_ctx_size
                                                   config.num_layers * config.decoder_hidden_size,
                                                   num_layers=1,
                                                   activation=config.activation)
@@ -474,7 +492,8 @@ class VHCR(nn.Module):
         self.conv_posterior_var = nn.Linear(config.context_size,
                                              config.z_conv_size)
 
-        self.sent_prior_h = layers.FeedForward(config.context_size + config.z_conv_size,
+        #z_sen do add z_ctx or not?
+        self.sent_prior_h = layers.FeedForward(config.context_size + config.z_conv_size+config.z_ctx_size,  #z_sen_prior(h_ctx,z_conv,z_ctx)
                                                config.context_size,
                                                num_layers=1,
                                                hidden_size=config.z_sent_size,
@@ -484,8 +503,8 @@ class VHCR(nn.Module):
         self.sent_prior_var = nn.Linear(config.context_size,
                                         config.z_sent_size)
 
-        self.sent_posterior_h = layers.FeedForward(config.z_conv_size + config.encoder_hidden_size * self.encoder.num_directions * config.num_layers + config.context_size,
-                                                   config.context_size,
+        self.sent_posterior_h = layers.FeedForward(config.z_conv_size+config.z_ctx_size+config.encoder_hidden_size * self.encoder.num_directions * config.num_layers + config.context_size,
+                                                   config.context_size,  ##z_sen_posterior (h_ctx,z_conv,z_ctx,x_encode)
                                                    num_layers=2,
                                                    hidden_size=config.context_size,
                                                    activation=config.activation)
@@ -493,6 +512,28 @@ class VHCR(nn.Module):
                                            config.z_sent_size)
         self.sent_posterior_var = nn.Linear(config.context_size,
                                             config.z_sent_size)
+        ##z_ctx_prior
+        self.ctx_prior_h = layers.FeedForward(config.z_conv_size+config.context_size,
+                                                 config.context_size,
+                                                 num_layers=1,
+                                                 hidden_size=config.context_size,  ##use config.context_size or config.z_ctx_size?
+                                                 activation=config.activation)
+        self.ctx_prior_mu = nn.Linear(config.context_size,
+                                      config.z_ctx_size)
+        self.ctx_prior_var = nn.Linear(config.context_size,
+                                       config.z_ctx_size)
+        ##z_ctx_posterior
+        self.ctx_posterior_h = layers.FeedForward(config.z_conv_size+config.context_size+config.num_layers * self.context_inference.num_directions * config.context_size,
+                                                    config.context_size,
+                                                    num_layers=2,
+                                                    hidden_size=config.context_size,
+                                                    activation=config.activation)
+        ##context_h is based on x(<t),z_conv,h_context(t) but how to only use x(<t)  the expression above just like z_conv using x
+        self.ctx_posterior_mu = nn.Linear(config.context_size,
+                                         config.z_ctx_size)
+        self.ctx_posterior_var = nn.Linear(config.context_size,
+                                         config.z_ctx_size)
+        
 
         if config.tie_embedding:
             self.decoder.embedding = self.encoder.embedding
@@ -506,16 +547,29 @@ class VHCR(nn.Module):
         mu_posterior = self.conv_posterior_mu(h_posterior)
         var_posterior = self.softplus(self.conv_posterior_var(h_posterior))
         return mu_posterior, var_posterior
+    ##ctx_prior
+    def ctx_prior(self,context_outputs,z_conv):
+        h_prior = self.ctx_prior_h(torch.cat([context_outputs, z_conv], dim=1))
+        mu_prior = self.ctx_prior_mu(h_prior)
+        var_prior = self.softplus(self.ctx_prior_var(h_prior))
+        return mu_prior, var_prior
+    #ctx_posterior
+    def ctx_posterior(self,ctx_inference_hidden,context_outputs,z_conv):
+        h_posterior = self.ctx_posterior_h(torch.cat([context_outputs,ctx_inference_hidden,z_conv],1))
+        mu_posterior = self.ctx_posterior_mu(h_posterior)
+        var_posterior = self.softplus(self.ctx_posterior_var(h_posterior))
+        return mu_posterior,var_posterior
 
-    def sent_prior(self, context_outputs, z_conv):
+    #do I need to add z_ctx in sen_prior and sen_posterior?
+    def sent_prior(self, context_outputs, z_conv,z_ctx):
         # Context dependent prior
-        h_prior = self.sent_prior_h(torch.cat([context_outputs, z_conv], dim=1))
+        h_prior = self.sent_prior_h(torch.cat([context_outputs, z_conv, z_ctx], dim=1))
         mu_prior = self.sent_prior_mu(h_prior)
         var_prior = self.softplus(self.sent_prior_var(h_prior))
         return mu_prior, var_prior
 
-    def sent_posterior(self, context_outputs, encoder_hidden, z_conv):
-        h_posterior = self.sent_posterior_h(torch.cat([context_outputs, encoder_hidden, z_conv], 1))
+    def sent_posterior(self, context_outputs, encoder_hidden, z_conv,z_ctx):
+        h_posterior = self.sent_posterior_h(torch.cat([context_outputs, encoder_hidden, z_conv, z_ctx], 1))
         mu_posterior = self.sent_posterior_mu(h_posterior)
         var_posterior = self.softplus(self.sent_posterior_var(h_posterior))
         return mu_posterior, var_posterior
@@ -531,10 +585,11 @@ class VHCR(nn.Module):
                 - train: [batch_size, seq_len, vocab_size]
                 - eval: [batch_size, seq_len]
         """
+        #  num_sentences = sentences.size(0) - batch_size num_sentence is the input sentences
         batch_size = input_conversation_length.size(0)
         num_sentences = sentences.size(0) - batch_size
         max_len = input_conversation_length.data.max().item()
-
+        
         # encoder_outputs: [num_sentences + batch_size, max_source_length, hidden_size]
         # encoder_hidden: [num_layers * direction, num_sentences + batch_size, hidden_size]
         encoder_outputs, encoder_hidden = self.encoder(sentences,
@@ -569,6 +624,7 @@ class VHCR(nn.Module):
                 indices = np.where(np.random.rand(max_len) < self.config.sentence_drop)[0]
                 if len(indices) > 0:
                     encoder_hidden_input[:, indices, :] = self.unk_sent
+            
 
             # context_inference_outputs: [batch_size, max_len, num_directions * context_size]
             # context_inference_hidden: [num_layers * num_directions, batch_size, hidden_size]
@@ -589,12 +645,55 @@ class VHCR(nn.Module):
             context_init = self.z_conv2context(z_conv).view(
                 self.config.num_layers, batch_size, self.config.context_size)
 
+            #expand z_conv to batch_size, max_len, z_conv_size then every sentence can use z_conv
             z_conv_expand = z_conv.view(z_conv.size(0), 1, z_conv.size(
                 1)).expand(z_conv.size(0), max_len, z_conv.size(1))
-            context_outputs, context_last_hidden = self.context_encoder(
-                torch.cat([encoder_hidden_input, z_conv_expand], 2),
-                input_conversation_length,
-                hidden=context_init)
+            
+            """code for context"""
+            context_outputs = []
+            z_ctx = []
+            ctx_mu_prior = []
+            ctx_var_prior = []
+            ctx_mu_posterior = []
+            ctx_var_posterior = []
+            ctx_eps = to_var(torch.randn((batch_size, self.config.z_ctx_size)))            
+            # context_inference_outputs: [batch_size, max_len, num_directions * context_size]
+            # context_inference_hidden: [num_layers * num_directions, batch_size, hidden_size]
+            ctx_inference_outputs, ctx_inference_hidden = self.context_inference(encoder_hidden,
+                                                                                         input_conversation_length + 1)
+            context_init1 = context_init.squeeze(0)
+            for i_ctx in range(max_len):
+                if i_ctx==0:
+                    context_cell_input = torch.cat([encoder_hidden_input[:,i_ctx,:], z_conv_expand[:,i_ctx,:]], 1)                 
+                    context_h_cell = self.context2context_first(
+                        context_cell_input,
+                        hidden=context_init1)
+                else:
+                    context_cell_input = torch.cat([encoder_hidden_input[:,i_ctx,:],  z_conv_expand[:,i_ctx,:],z_ctx_cell],1)     
+                    context_h_cell = self.context2context(
+                        context_cell_input,
+                        hidden=context_h_cell)
+                #z_ctx_cell: [batch_size,num_directions * context_size]
+                ctx_cell_mu_prior,ctx_cell_var_prior = self.ctx_prior(context_h_cell,z_conv_expand[:,i_ctx,:])               
+                ctx_cell_mu_posterior,ctx_cell_var_posterior = self.ctx_posterior(ctx_inference_outputs[:,i_ctx,:],context_h_cell,z_conv_expand[:,i_ctx,:])
+                z_ctx_cell = ctx_cell_mu_posterior + torch.sqrt(ctx_cell_var_posterior) * ctx_eps
+                z_ctx.append(z_ctx_cell)
+                ctx_mu_prior.append(ctx_cell_mu_prior)
+                ctx_var_prior.append(ctx_cell_var_prior)
+                ctx_mu_posterior.append(ctx_cell_mu_posterior)
+                ctx_var_posterior.append(ctx_cell_var_posterior)
+                context_outputs.append(context_h_cell)
+            #context_outputs: [batch_size,max_len,context_size]
+            #z_ctx:[batch_size,max_len,context_size]
+            context_outputs = torch.stack(context_outputs,1)
+            ctx_mu_prior = torch.stack(ctx_mu_prior,1)
+            ctx_var_prior = torch.stack(ctx_var_prior,1)
+            ctx_mu_posterior = torch.stack(ctx_mu_posterior,1)
+            ctx_var_posterior = torch.stack(ctx_var_posterior,1)
+            z_ctx = torch.stack(z_ctx,1)
+
+            
+            """stop here"""
 
             # flatten outputs
             # context_outputs: [num_sentences, context_size]
@@ -603,11 +702,30 @@ class VHCR(nn.Module):
 
             z_conv_flat = torch.cat(
                 [z_conv_expand[i, :l, :] for i, l in enumerate(input_conversation_length.data)])
-            sent_mu_prior, sent_var_prior = self.sent_prior(context_outputs, z_conv_flat)
+            ##z_ctx faltten and its mu and var
+            """code edit here"""
+            z_ctx_flat = torch.cat(
+                [z_ctx[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            ctx_mu_posterior_flat = torch.cat(
+                [ctx_mu_posterior[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+
+            ctx_var_posterior_flat = torch.cat(
+                [ctx_var_posterior[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            ctx_mu_prior_flat = torch.cat(
+                [ctx_mu_prior[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            ctx_var_prior_flat = torch.cat(
+                [ctx_var_prior[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            log_q_zx_ctx = normal_logpdf(z_ctx_flat, ctx_mu_posterior_flat, ctx_var_posterior_flat).sum()
+            log_p_z_ctx = normal_logpdf(z_ctx_flat, ctx_mu_prior_flat, ctx_var_prior_flat).sum()
+            kl_div_ctx = normal_kl_div(ctx_mu_posterior_flat, ctx_var_posterior_flat,
+                                        ctx_mu_prior_flat, ctx_var_prior_flat).sum()     
+            
+            """stop here"""
+            sent_mu_prior, sent_var_prior = self.sent_prior(context_outputs, z_conv_flat,z_ctx_flat)
             eps = to_var(torch.randn((num_sentences, self.config.z_sent_size)))
 
             sent_mu_posterior, sent_var_posterior = self.sent_posterior(
-                context_outputs, encoder_hidden_inference_flat, z_conv_flat)
+                context_outputs, encoder_hidden_inference_flat, z_conv_flat,z_ctx_flat)
             z_sent = sent_mu_posterior + torch.sqrt(sent_var_posterior) * eps
             log_q_zx_sent = normal_logpdf(z_sent, sent_mu_posterior, sent_var_posterior).sum()
 
@@ -616,9 +734,9 @@ class VHCR(nn.Module):
             kl_div_sent = normal_kl_div(sent_mu_posterior, sent_var_posterior,
                                         sent_mu_prior, sent_var_prior).sum()
 
-            kl_div = kl_div_conv + kl_div_sent
-            log_q_zx = log_q_zx_conv + log_q_zx_sent
-            log_p_z = log_p_z_conv + log_p_z_sent
+            kl_div = kl_div_conv + kl_div_sent+kl_div_ctx
+            log_q_zx = log_q_zx_conv + log_q_zx_sent + log_q_zx_ctx
+            log_p_z = log_p_z_conv + log_p_z_sent + log_p_z_ctx
         else:
             z_conv = conv_mu_prior + torch.sqrt(conv_var_prior) * conv_eps
             context_init = self.z_conv2context(z_conv).view(
@@ -627,10 +745,46 @@ class VHCR(nn.Module):
             z_conv_expand = z_conv.view(z_conv.size(0), 1, z_conv.size(
                 1)).expand(z_conv.size(0), max_len, z_conv.size(1))
             # context_outputs: [batch_size, max_len, context_size]
-            context_outputs, context_last_hidden = self.context_encoder(
-                torch.cat([encoder_hidden_input, z_conv_expand], 2),
-                input_conversation_length,
-                hidden=context_init)
+            
+            
+            """code for context how to dropout? need dropout?"""
+            context_outputs = []
+            z_ctx = []
+            ctx_mu_prior = []
+            ctx_var_prior = []
+            ctx_eps = to_var(torch.randn((batch_size, self.config.z_ctx_size)))            
+            # context_inference_outputs: [batch_size, max_len, num_directions * context_size]
+            # context_inference_hidden: [num_layers * num_directions, batch_size, hidden_size]
+            ctx_inference_outputs, ctx_inference_hidden = self.context_inference(encoder_hidden,
+                                                                                         input_conversation_length + 1)
+
+            context_init1 = context_init.squeeze(0)
+            for i_ctx in range(max_len):
+                if i_ctx==0:
+                    context_cell_input = torch.cat([encoder_hidden_input[:,i_ctx,:], z_conv_expand[:,i_ctx,:]], 1)                 
+                    context_h_cell = self.context2context_first(
+                        context_cell_input,
+                        hidden=context_init1)
+                else:
+                    context_cell_input = torch.cat([encoder_hidden_input[:,i_ctx,:],  z_conv_expand[:,i_ctx,:],z_ctx_cell],1)     
+                    context_h_cell = self.context2context(
+                        context_cell_input,
+                        hidden=context_h_cell)
+                #z_ctx_cell: [batch_size,num_directions * context_size]
+                ctx_cell_mu_prior,ctx_cell_var_prior = self.ctx_prior(context_h_cell,z_conv_expand[:,i_ctx,:])               
+                z_ctx_cell = ctx_cell_mu_prior + torch.sqrt(ctx_cell_var_prior) * ctx_eps
+                z_ctx.append(z_ctx_cell)
+                ctx_mu_prior.append(ctx_cell_mu_prior)
+                ctx_var_prior.append(ctx_cell_var_prior)
+                context_outputs.append(context_h_cell)
+            #context_outputs: [batch_size,max_len,context_size]
+            #z_ctx:[batch_size,max_len,context_size]
+            context_outputs = torch.stack(context_outputs,1)
+            ctx_mu_prior = torch.stack(ctx_mu_prior,1)
+            ctx_var_prior = torch.stack(ctx_var_prior,1)  
+            z_ctx = torch.stack(z_ctx,1)
+       
+            """stop here"""
             # flatten outputs
             # context_outputs: [num_sentences, context_size]
             context_outputs = torch.cat([context_outputs[i, :l, :]
@@ -639,36 +793,50 @@ class VHCR(nn.Module):
 
             z_conv_flat = torch.cat(
                 [z_conv_expand[i, :l, :] for i, l in enumerate(input_conversation_length.data)])
-            sent_mu_prior, sent_var_prior = self.sent_prior(context_outputs, z_conv_flat)
-            eps = to_var(torch.randn((num_sentences, self.config.z_sent_size)))
+            """code edit here"""
+            z_ctx_flat = torch.cat(
+                [z_ctx[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            ctx_mu_prior_flat = torch.cat(
+                [ctx_mu_prior[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            ctx_var_prior_flat = torch.cat(
+                [ctx_var_prior[i, :l, :] for i, l in enumerate(input_conversation_length.data)])  
+            """stop here"""
 
+            sent_mu_prior, sent_var_prior = self.sent_prior(context_outputs, z_conv_flat,z_ctx_flat)
+            eps = to_var(torch.randn((num_sentences, self.config.z_sent_size)))
             z_sent = sent_mu_prior + torch.sqrt(sent_var_prior) * eps
             kl_div = None
             log_p_z = normal_logpdf(z_sent, sent_mu_prior, sent_var_prior).sum()
-            log_p_z += normal_logpdf(z_conv, conv_mu_prior, conv_var_prior).sum()
+            log_p_z += normal_logpdf(z_conv_flat, conv_mu_prior, conv_var_prior).sum()
+            log_p_z += normal_logpdf(z_ctx_flat, ctx_mu_prior_flat, ctx_var_prior_flat).sum()
             log_q_zx = None
 
         # expand z_conv to all associated sentences
+        #expand z_ctx        
+#        z_ctx = torch.cat([z.view(1, -1).expand(m.item(), self.config.z_ctx_size)
+#                             for z, m in zip(z_ctx, input_conversation_length)])
         z_conv = torch.cat([z.view(1, -1).expand(m.item(), self.config.z_conv_size)
                              for z, m in zip(z_conv, input_conversation_length)])
 
         # latent_context: [num_sentences, context_size + z_sent_size +
-        # z_conv_size]
-        latent_context = torch.cat([context_outputs, z_sent, z_conv], 1)
+        # z_conv_size+z_ctx]
+        latent_context = torch.cat([context_outputs, z_sent, z_conv,z_ctx_flat], 1)
         decoder_init = self.context2decoder(latent_context)
         decoder_init = decoder_init.view(-1,
                                          self.decoder.num_layers,
                                          self.decoder.hidden_size)
         decoder_init = decoder_init.transpose(1, 0).contiguous()
-
+        #decoder_init: [num_layers,batch_size,hidden_size]
         # train: [batch_size, seq_len, vocab_size]
         # eval: [batch_size, seq_len]
+        
+        """edit here"""
         if not decode:
             decoder_outputs = self.decoder(target_sentences,
                                             init_h=decoder_init,
                                             decode=decode)
             return decoder_outputs, kl_div, log_p_z, log_q_zx
-
+        ## decoder_outputs  [batch_size, max_target_len, vocab_size]
         else:
             # prediction: [batch_size, beam_size, max_unroll]
             prediction, final_score, length = self.decoder.beam_decode(init_h=decoder_init)
@@ -690,6 +858,7 @@ class VHCR(nn.Module):
         for i in range(n_context):
             # encoder_outputs: [batch_size, seq_len, hidden_size * direction]
             # encoder_hidden: [num_layers * direction, batch_size, hidden_size]
+            """encoder use nn.GRU which need a 3 dimension input context[:, i, :] ? two dimension right? """
             encoder_outputs, encoder_hidden = self.encoder(context[:, i, :],
                                                            sentence_length[:, i])
 
@@ -760,3 +929,7 @@ class VHCR(nn.Module):
 
         samples = torch.stack(samples, 1)
         return samples
+
+
+
+
