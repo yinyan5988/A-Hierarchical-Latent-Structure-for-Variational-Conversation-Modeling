@@ -14,8 +14,9 @@ data_dict = {'cornell': data_dir.joinpath('cornell'), 'ubuntu': data_dir.joinpat
 optimizer_dict = {'RMSprop': optim.RMSprop, 'Adam': optim.Adam}
 rnn_dict = {'lstm': nn.LSTM, 'gru': nn.GRU}
 rnncell_dict = {'lstm': StackedLSTMCell, 'gru': StackedGRUCell}
+rnncell_ctx_dict = {'lstm':nn.LSTMCell, 'gru': nn.GRUCell}
 username = Path.home().name
-save_dir = Path(f'/data1/{username}/conversation/')
+save_dir = Path(f'/Users/waiwai/Desktop/VCHR/save_data/{username}/conversation/')
 
 
 def str2bool(v):
@@ -39,6 +40,8 @@ class Config(object):
                     value = rnn_dict[value]
                 if key == 'rnncell':
                     value = rnncell_dict[value]
+                if key== 'rnncell_ctx':
+                    value = rnncell_ctx_dict[value]
                 setattr(self, key, value)
 
         # Dataset directory: ex) ./datasets/cornell/
@@ -107,6 +110,7 @@ def get_config(parse=True, **optional_kwargs):
     # Currently does not support lstm
     parser.add_argument('--rnn', type=str, default='gru')
     parser.add_argument('--rnncell', type=str, default='gru')
+    parser.add_argument('--rnncell_ctx', type=str, default='gru')
     parser.add_argument('--num_layers', type=int, default=1)
     parser.add_argument('--embedding_size', type=int, default=500)
     parser.add_argument('--tie_embedding', type=str2bool, default=True)
@@ -121,6 +125,7 @@ def get_config(parse=True, **optional_kwargs):
     # VAE model
     parser.add_argument('--z_sent_size', type=int, default=100)
     parser.add_argument('--z_conv_size', type=int, default=100)
+    parser.add_argument('--z_ctx_size', type=int, default=100)    
     parser.add_argument('--word_drop', type=float, default=0.0,
                         help='only applied to variational models')
     parser.add_argument('--kl_threshold', type=float, default=0.0)
