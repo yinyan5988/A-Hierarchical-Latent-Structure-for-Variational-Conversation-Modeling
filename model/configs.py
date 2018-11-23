@@ -105,8 +105,8 @@ def get_config(parse=True, **optional_kwargs):
     parser.add_argument('--beam_size', type=int, default=1)
 
     # Model
-    parser.add_argument('--model', type=str, default='VHCR',
-                        help='one of {HRED, VHRED, VHCR}')
+    parser.add_argument('--model', type=str, default='VHCR_new',
+                        help='one of {HRED, VHRED, VHCR,VHCR_new}')
     # Currently does not support lstm
     parser.add_argument('--rnn', type=str, default='gru')
     parser.add_argument('--rnncell', type=str, default='gru')
@@ -159,3 +159,4 @@ def get_config(parse=True, **optional_kwargs):
     kwargs.update(optional_kwargs)
 
     return Config(**kwargs)
+
